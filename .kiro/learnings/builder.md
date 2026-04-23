@@ -23,3 +23,8 @@ Written by the verifier when verification failures trace back to the builder.
 - **Issue**: After IAM fix, Lambda throws ResourceNotFoundException: "This Model is marked by provider as Legacy and you have not been actively using the model in the last 30 days."
 - **Root cause**: Builder chose us.anthropic.claude-3-haiku-20240307-v1:0 which is legacy-gated for accounts that haven't used it recently. The inference profile shows ACTIVE but the underlying model rejects requests.
 - **Fix**: Use a current-generation model for new projects. For cheap Haiku-class: us.anthropic.claude-3-5-haiku-20241022-v1:0 or us.anthropic.claude-haiku-4-5-20251001-v1:0. Always test model access before signaling build complete.
+
+### 2026-04-23 — API Gateway 504 timeout from two-pass Bedrock calls
+- **Issue**: POST /extract-chart returns 504. Lambda takes 39s (two sequential Bedrock InvokeModel calls) but API Gateway REST has a hard 29s integration timeout.
+- **Root cause**: Builder implemented extract and confidence scoring as two separate Bedrock calls. Each call takes ~18-20s with Haiku 4.5, totaling ~39s. API Gateway REST API has an immutable 29-second timeout.
+- **Fix**: Merge extract and confidence prompts into a single Bedrock call. Prompt should instruct the model to extract fields AND score confidence in one response. Expected latency: ~18-20s, well within the 29s limit.
