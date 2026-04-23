@@ -172,3 +172,53 @@
 - Role exists
 - Permissions: ✅ CloudWatch Logs, ✅ DynamoDB (CRUD+Scan), ✅ S3 (Get/Put), ✅ Bedrock (InvokeModel)
 - All resources scoped to correct ARNs
+
+---
+
+# Verification Report — Subtask 2: Custom Vocabulary
+
+**Date**: 2026-04-23  
+**Verifier**: verifier-1  
+**Overall**: ✅ PASS
+
+---
+
+## Step 1: Vocabulary Exists and is READY
+
+**Resource**: `msi-transcribe-poc-medical-spa`  
+**Result**: ✅ PASS
+
+```
+=== get-vocabulary ===
+{
+  "VocabularyName": "msi-transcribe-poc-medical-spa",
+  "LanguageCode": "en-US",
+  "VocabularyState": "READY",
+  "LastModifiedTime": "2026-04-23 03:19:10.460000+00:00"
+}
+```
+
+- Vocabulary state: READY
+- Language: en-US
+- Note: FailureReason field contains a stale message from a prior attempt (spaces on line 7). Current version is READY with hyphens.
+
+---
+
+## Step 2: All 29 Terms Present
+
+**Result**: ✅ PASS
+
+```
+=== vocabulary content (29 terms) ===
+Botox, Dysport, Juvederm, Restylane, microneedling, dermaplaning,
+chemical-peel, IPL, laser-resurfacing, hyaluronic-acid,
+platelet-rich-plasma, PRP, subcutaneous, intramuscular, erythema,
+edema, contraindication, glabella, nasolabial, mentalis, orbicularis,
+corrugator, procerus, frontalis, masseter, CoolSculpting, PDO-threads,
+neuromodulator, dermal-filler
+```
+
+- Expected: 29 terms → Actual: 29 terms
+- Missing: none
+- Extra: none
+- Multi-word terms correctly hyphenated per Transcribe requirements
