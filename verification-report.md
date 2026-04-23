@@ -222,3 +222,63 @@ neuromodulator, dermal-filler
 - Missing: none
 - Extra: none
 - Multi-word terms correctly hyphenated per Transcribe requirements
+
+---
+
+# Verification Report — Subtask 3: Chart Extraction Lambda + REST API
+
+**Date**: 2026-04-23  
+**Verifier**: verifier-1  
+**Overall**: ❌ FAIL
+
+---
+
+## Step 1: Lambda Function Configuration
+
+**Resource**: `msi-transcribe-poc-extract-chart`  
+**Result**: ✅ PASS
+
+```
+{
+  "FunctionName": "msi-transcribe-poc-extract-chart",
+  "Runtime": "nodejs20.x",
+  "MemorySize": 256,
+  "Timeout": 60,
+  "Handler": "index.handler",
+  "Role": "arn:aws:iam::779846822196:role/msi-transcribe-poc-lambda-role",
+  "State": "Active"
+}
+```
+
+- Lambda exists, Active, correct runtime/memory/timeout
+
+---
+
+## Step 2: POST /extract-chart Endpoint
+
+**Result**: ❌ FAIL — HTTP 502
+
+```
+$ curl -X POST https://ld5q3i55aj.execute-api.us-east-1.amazonaws.com/prod/extract-chart \
+  -H "Content-Type: application/json" \
+  -d '{"transcriptText": "Patient is a 42-year-old female...", "sessionId": "test-verify-001"}'
+
+Response: {"message": "Internal server error"}
+HTTP Status: 502
+```
+
+**Root cause from CloudWatch Logs:**
+```
+ERROR: ResourceNotFoundException: Access denied. This Model is marked by provider
+as Legacy and you have not been actively using the model in the last 30 days.
+Please upgrade to an active model on Amazon Bedrock
+
+Model ID used: anthropic.claude-3-haiku-20240307-v1:0
+```
+
+**Fix required**: Change model ID from `anthropic.claude-3-haiku-20240307-v1:0` to inference profile `us.anthropic.claude-3-haiku-20240307-v1:0` (or use `us.anthropic.claude-haiku-4-5-20251001-v1:0` for the latest active Haiku).
+
+Available active Haiku inference profiles:
+- `us.anthropic.claude-3-haiku-20240307-v1:0` (ACTIVE)
+- `us.anthropic.claude-3-5-haiku-20241022-v1:0` (ACTIVE)
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` (ACTIVE)
