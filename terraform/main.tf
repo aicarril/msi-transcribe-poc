@@ -281,18 +281,152 @@ resource "aws_lambda_permission" "api_gw_extract_chart" {
   source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
 }
 
+# --- Lambda: credentials ---
+data "archive_file" "credentials" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambda/credentials"
+  output_path = "${path.module}/credentials.zip"
+}
+
+resource "aws_iam_role" "credentials_lambda_role" {
+  name = "${var.project}-credentials-lambda-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "credentials_lambda_policy" {
+  name = "${var.project}-credentials-lambda-policy"
+  role = aws_iam_role.credentials_lambda_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cognito-identity:GetId", "cognito-identity:GetCredentialsForIdentity"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "credentials" {
+  function_name    = "${var.project}-credentials"
+  role             = aws_iam_role.credentials_lambda_role.arn
+  handler          = "index.handler"
+  runtime          = "nodejs20.x"
+  timeout          = 10
+  memory_size      = 128
+  filename         = data.archive_file.credentials.output_path
+  source_code_hash = data.archive_file.credentials.output_base64sha256
+  environment {
+    variables = {
+      IDENTITY_POOL_ID = aws_cognito_identity_pool.transcribe_pool.id
+    }
+  }
+  tags = local.tags
+}
+
+# GET /credentials
+resource "aws_api_gateway_resource" "credentials" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "credentials"
+}
+
+resource "aws_api_gateway_method" "credentials_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.credentials.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "credentials_get" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.credentials.id
+  http_method             = aws_api_gateway_method.credentials_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.credentials.invoke_arn
+}
+
+# CORS OPTIONS /credentials
+resource "aws_api_gateway_method" "credentials_options" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.credentials.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "credentials_options" {
+  rest_api_id       = aws_api_gateway_rest_api.api.id
+  resource_id       = aws_api_gateway_resource.credentials.id
+  http_method       = aws_api_gateway_method.credentials_options.http_method
+  type              = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "credentials_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.credentials.id
+  http_method = aws_api_gateway_method.credentials_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "credentials_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.credentials.id
+  http_method = aws_api_gateway_method.credentials_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.credentials_options]
+}
+
+resource "aws_lambda_permission" "api_gw_credentials" {
+  statement_id  = "AllowAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.credentials.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
 # --- API Gateway Deployment ---
 resource "aws_api_gateway_deployment" "api" {
   rest_api_id = aws_api_gateway_rest_api.api.id
   depends_on = [
     aws_api_gateway_integration.extract_chart_post,
-    aws_api_gateway_integration.extract_chart_options
+    aws_api_gateway_integration.extract_chart_options,
+    aws_api_gateway_integration.credentials_get,
+    aws_api_gateway_integration.credentials_options
   ]
   triggers = {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.extract_chart.id,
       aws_api_gateway_method.extract_chart_post.id,
       aws_api_gateway_integration.extract_chart_post.id,
+      aws_api_gateway_resource.credentials.id,
+      aws_api_gateway_method.credentials_get.id,
+      aws_api_gateway_integration.credentials_get.id,
     ]))
   }
   lifecycle { create_before_destroy = true }
