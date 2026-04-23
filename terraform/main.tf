@@ -166,6 +166,26 @@ resource "aws_iam_role_policy" "lambda_policy" {
   })
 }
 
+# --- Amazon Transcribe Custom Vocabulary ---
+resource "aws_transcribe_vocabulary" "medical_spa" {
+  vocabulary_name = "${var.project}-medical-spa"
+  language_code   = "en-US"
+  phrases = [
+    "Botox", "Dysport", "Juvederm", "Restylane",
+    "microneedling", "dermaplaning", "chemical peel",
+    "IPL", "laser resurfacing", "hyaluronic acid",
+    "platelet-rich plasma", "PRP",
+    "subcutaneous", "intramuscular",
+    "erythema", "edema", "contraindication",
+    "glabella", "nasolabial", "mentalis",
+    "orbicularis", "corrugator", "procerus",
+    "frontalis", "masseter",
+    "CoolSculpting", "PDO threads",
+    "neuromodulator", "dermal filler"
+  ]
+  tags = local.tags
+}
+
 # --- Outputs ---
 output "s3_bucket_name" {
   value = aws_s3_bucket.transcripts.id
@@ -189,4 +209,8 @@ output "cognito_unauth_role_arn" {
 
 output "region" {
   value = var.region
+}
+
+output "custom_vocabulary_name" {
+  value = aws_transcribe_vocabulary.medical_spa.vocabulary_name
 }
