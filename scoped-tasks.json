@@ -3,107 +3,77 @@
   "subtasks": [
     {
       "id": 1,
-      "title": "Terraform foundation: S3, DynamoDB, IAM roles",
-      "description": "Set up core AWS infrastructure with Terraform. Create: (1) S3 bucket for transcript/audio storage with server-side encryption, (2) DynamoDB table 'sessions' (partition key: sessionId) for raw transcripts, extracted charts, status, timestamps, (3) DynamoDB table 'chart-templates' (partition key: templateId) for chart template definitions, (4) DynamoDB table 'connections' (partition key: connectionId) for WebSocket connection tracking, (5) IAM roles for Lambda functions with least-privilege policies for Transcribe, Bedrock, S3, DynamoDB, API Gateway Management API access. Seed the chart-templates table with the Neuromodulator Treatment Form template JSON from the task.",
+      "title": "Terraform foundation: S3, DynamoDB, Cognito, IAM",
+      "description": "Set up core AWS infrastructure with Terraform. Create: (1) S3 bucket for transcript/audio storage with SSE, (2) DynamoDB table for chart records (partition key: sessionId), (3) Cognito Identity Pool (unauthenticated access enabled for POC) that grants temporary AWS credentials scoped to transcribe:StartStreamTranscriptionWebSocket only, (4) IAM roles for Lambda functions with least-privilege for Bedrock, S3, DynamoDB, API Gateway. The Cognito unauth role is the key change — it lets the browser call Transcribe Streaming directly, avoiding the API Gateway WebSocket 29s Lambda timeout.",
       "dependencies": [],
-      "services": ["S3", "DynamoDB", "IAM", "Terraform"],
+      "services": ["S3", "DynamoDB", "Cognito", "IAM", "Terraform"],
       "verificationCriteria": [
-        "terraform apply completes without errors",
-        "S3 bucket exists with encryption enabled",
-        "DynamoDB sessions table exists with correct key schema",
-        "DynamoDB chart-templates table exists and contains seeded Neuromodulator template",
-        "DynamoDB connections table exists with connectionId as partition key",
-        "IAM roles exist with correct policy attachments",
-        "All resources tagged with project=msi-transcribe-poc"
+        "terraform apply succeeds with no errors",
+        "S3 bucket exists and has encryption enabled",
+        "DynamoDB table exists with correct key schema",
+        "Cognito Identity Pool exists and returns temporary credentials",
+        "Unauth IAM role has transcribe:StartStreamTranscriptionWebSocket permission",
+        "Lambda IAM roles exist with correct policy attachments"
       ]
     },
     {
       "id": 2,
-      "title": "Custom Vocabulary for medical spa terminology",
-      "description": "Create an Amazon Transcribe Custom Vocabulary with medical spa terms: Botox, Dysport, Juvederm, Restylane, microneedling, dermaplaning, chemical peel, IPL, laser resurfacing, hyaluronic acid, platelet-rich plasma, PRP, subcutaneous, intramuscular, erythema, edema, contraindication, glabella, nasolabial, mentalis, orbicularis, corrugator, procerus, frontalis, masseter. Use a vocabulary table file (CSV) with Phrase, SoundsLike, IPA, DisplayAs columns. Deploy via Terraform or AWS CLI. Verify the vocabulary reaches READY state.",
+      "title": "Custom Vocabulary for Amazon Transcribe",
+      "description": "Create an Amazon Transcribe Custom Vocabulary with medical spa terminology via Terraform or AWS CLI. Terms: Botox, Dysport, Juvederm, Restylane, microneedling, dermaplaning, chemical peel, IPL, laser resurfacing, hyaluronic acid, platelet-rich plasma, PRP, subcutaneous, intramuscular, erythema, edema, contraindication, glabella, nasolabial, mentalis, orbicularis, corrugator, procerus, frontalis, masseter, CoolSculpting, PDO threads, neuromodulator, dermal filler. Vocabulary must reach READY state.",
       "dependencies": [1],
       "services": ["Transcribe"],
       "verificationCriteria": [
-        "Custom Vocabulary exists in Transcribe with status READY",
-        "Vocabulary contains all required medical spa terms",
-        "Vocabulary name is stored in config/environment variable for Lambda to reference"
+        "Custom Vocabulary exists in Transcribe",
+        "Vocabulary status is READY",
+        "aws transcribe get-vocabulary returns correct name and READY status"
       ]
     },
     {
       "id": 3,
-      "title": "WebSocket API Gateway + connection management Lambdas",
-      "description": "Create an API Gateway WebSocket API with $connect, $disconnect, and sendaudio routes. Build Lambda functions for connection management: $connect stores connectionId + sessionId in DynamoDB connections table, $disconnect removes the record. The sendaudio route is wired to the streaming Lambda (subtask 4). Deploy via Terraform. Output the WebSocket URL (wss://) for the frontend.",
+      "title": "Chart extraction Lambda + REST API (Bedrock Claude)",
+      "description": "Build a Lambda function behind API Gateway REST endpoint POST /extract-chart. Input: full transcript text + chart template type. The Lambda sends the transcript to Bedrock Claude (claude-3-haiku or sonnet) with a structured prompt to extract fields into the Neuromodulator Treatment Form JSON template. Returns filled chart JSON. Saves extracted chart to DynamoDB (sessionId key) and raw transcript to S3. The prompt instructs Claude to fill only fields evidenced in the transcript, leave others empty. Include the Neuromodulator chart template as a JSON file in the Lambda package.",
       "dependencies": [1],
-      "services": ["API Gateway WebSocket", "Lambda", "DynamoDB"],
+      "services": ["Lambda", "API Gateway REST", "Bedrock", "DynamoDB", "S3"],
       "verificationCriteria": [
-        "WebSocket API deployed with wss:// endpoint",
-        "wscat can connect and disconnect without errors",
-        "$connect Lambda stores connectionId in DynamoDB connections table",
-        "$disconnect Lambda removes connectionId from DynamoDB connections table",
-        "CloudWatch logs confirm connection lifecycle"
+        "POST /extract-chart with sample transcript returns valid chart JSON",
+        "Returned JSON matches Neuromodulator template schema",
+        "Fields correctly extracted (treatment, products, areas, dosage)",
+        "Unknown fields returned as empty, not hallucinated",
+        "Chart saved to DynamoDB, transcript saved to S3",
+        "Lambda logs show successful Bedrock invocation"
       ]
     },
     {
       "id": 4,
-      "title": "Transcribe Streaming Lambda — real-time audio-to-text",
-      "description": "Build a single long-running Lambda function invoked by the sendaudio WebSocket route. Architecture: On the first sendaudio message (type=startSession), the Lambda opens a Transcribe Streaming session (StartStreamTranscription) with the Custom Vocabulary, then enters a loop — it reads audio chunks from the WebSocket (via API GW management API or callback URL), pipes them to Transcribe, and sends partial/final transcript results back to the client via API GW postToConnection. The Lambda stays alive for the entire session duration (up to 15min limit, fine for ~2min dictations). On endSession message, it closes the Transcribe stream, assembles the full transcript, stores it in S3, saves session metadata to DynamoDB, and exits. Key: this is ONE Lambda invocation per session, not one per message. Configure Lambda with 512MB memory and 900s timeout.",
-      "dependencies": [2, 3],
-      "services": ["Lambda", "Transcribe Streaming", "S3", "DynamoDB", "API Gateway WebSocket"],
+      "title": "Chart CRUD REST API (retrieve, update, list)",
+      "description": "Add REST API Gateway endpoints on the same API from subtask 3: (1) GET /charts/{sessionId} — retrieve chart from DynamoDB, (2) PUT /charts/{sessionId} — update chart after provider review, (3) GET /charts — list recent charts. Enable CORS on all endpoints for browser access.",
+      "dependencies": [1, 3],
+      "services": ["API Gateway REST", "Lambda", "DynamoDB"],
       "verificationCriteria": [
-        "Send startSession via WebSocket — Lambda starts and opens Transcribe stream",
-        "Send audio chunks — receive partial transcript fragments back via WebSocket",
-        "Send endSession — receive full assembled transcript, Lambda exits cleanly",
-        "Full transcript stored in S3 bucket under sessions/{sessionId}/transcript.txt",
-        "Session record created in DynamoDB with status and transcript reference",
-        "Custom Vocabulary terms correctly transcribed (Botox, glabella, etc.)",
-        "Lambda CloudWatch logs show clean session lifecycle with no timeout errors"
+        "GET /charts/{sessionId} returns correct chart for known session",
+        "PUT /charts/{sessionId} persists updates",
+        "GET /charts returns list of recent charts",
+        "404 for unknown sessionId",
+        "CORS headers present in responses"
       ]
     },
     {
       "id": 5,
-      "title": "Bedrock Claude chart extraction Lambda + HTTP API",
-      "description": "Build a Lambda function exposed via API Gateway HTTP API (POST /extract-chart). It accepts {sessionId, transcriptText, templateId}. It reads the chart template from DynamoDB chart-templates table, constructs a prompt with the transcript and template, calls Bedrock Claude (prefer claude-3-haiku for speed, fall back to sonnet) to extract structured fields. Implement dual-pass: first pass extracts fields, second pass reviews and scores confidence (0-1) per field. Store the extracted chart + confidence scores in DynamoDB sessions table. Return the filled chart JSON to the caller.",
-      "dependencies": [1],
-      "services": ["Lambda", "Bedrock", "DynamoDB", "API Gateway HTTP"],
+      "title": "Demo UI: live transcription + chart auto-fill interface",
+      "description": "Build a single HTML page hosted on S3+CloudFront. The browser uses AWS SDK for JS v3 to: (1) get temp credentials from Cognito Identity Pool, (2) open a WebSocket directly to Amazon Transcribe Streaming with Custom Vocabulary — no Lambda in the audio path, (3) capture mic audio via MediaRecorder/AudioWorklet and stream PCM to Transcribe, (4) display live transcript fragments on the left panel. On End Session: (5) POST full transcript to /extract-chart, (6) display auto-filled chart fields in an editable form on the right panel, (7) Save button calls PUT /charts/{sessionId}, (8) session history via GET /charts. Include a sample dictation script on the page. Must work in Chrome. Include DEMO-GUIDE.md with step-by-step instructions for a non-technical person.",
+      "dependencies": [1, 2, 3, 4],
+      "services": ["S3", "CloudFront", "Transcribe Streaming"],
       "verificationCriteria": [
-        "POST /extract-chart with sample transcript returns valid JSON matching chart template schema",
-        "All relevant chart fields populated from transcript content",
-        "Confidence scores (0-1) present for each extracted field",
-        "Chart record saved in DynamoDB sessions table",
-        "Medical spa terms correctly extracted (Botox units, treatment areas, injection sites)",
-        "Response time under 30 seconds for a typical 2-minute transcript"
-      ]
-    },
-    {
-      "id": 6,
-      "title": "Demo UI — interactive charting web page",
-      "description": "Build a single-page HTML/JS demo UI hosted on S3+CloudFront. Layout: (1) Header with MSI/Meevo branding and mode toggle (Live Session / Post-Session Dictation), (2) Left panel: Start/End Session buttons, live transcript area that shows text appearing in real-time, (3) Right panel: editable chart form that auto-populates after extraction, Save button. Mic capture via getUserMedia, encode to PCM 16-bit 16kHz mono, send chunks over WebSocket. On End Session, call POST /extract-chart, populate the form. Include a sample dictation script on the page for demo presenters. Include a dropdown to select chart template type (Neuromodulator pre-selected).",
-      "dependencies": [3, 4, 5],
-      "services": ["S3", "CloudFront"],
-      "verificationCriteria": [
-        "CloudFront URL loads the demo page with HTTP 200",
-        "Start Session activates microphone (browser permission prompt appears)",
-        "Live transcript text appears on screen while speaking",
-        "End Session triggers chart extraction and chart fields populate on the right",
-        "Chart fields are editable in the form",
-        "Save button persists corrections",
-        "Mode toggle switches between Live Session and Post-Session Dictation",
-        "Sample dictation script visible on the page",
-        "Works in Chrome"
-      ]
-    },
-    {
-      "id": 7,
-      "title": "DEMO-GUIDE.md — step-by-step demo walkthrough",
-      "description": "Write DEMO-GUIDE.md at /shared-repo/DEMO-GUIDE.md with: (1) Prerequisites (Chrome, microphone), (2) Demo URL (CloudFront), (3) Step-by-step walkthrough for a non-technical presenter to demo the full flow, (4) Sample dictation script to read aloud, (5) What to point out during the demo (live transcription, Custom Vocabulary accuracy, chart auto-population, confidence scores), (6) Troubleshooting tips (mic permissions, WebSocket connection issues), (7) Architecture diagram in text/ASCII showing the data flow.",
-      "dependencies": [6],
-      "services": [],
-      "verificationCriteria": [
-        "DEMO-GUIDE.md exists at /shared-repo/DEMO-GUIDE.md",
-        "Contains working CloudFront demo URL",
-        "A non-technical person can follow the guide to run the demo end-to-end",
-        "Sample dictation script included",
-        "Troubleshooting section covers common issues"
+        "CloudFront URL loads demo page with 200",
+        "Start Session activates mic and connects to Transcribe Streaming",
+        "Live transcript appears on screen while speaking",
+        "Medical spa terms transcribed correctly (Botox not 'boat ox')",
+        "End Session triggers chart extraction, fields auto-populate",
+        "Chart fields are editable, Save persists changes",
+        "Session history shows saved charts",
+        "Sample dictation script visible on page",
+        "DEMO-GUIDE.md exists with clear step-by-step instructions",
+        "Works in Chrome without console errors"
       ]
     }
   ]

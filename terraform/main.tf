@@ -21,9 +21,7 @@ variable "project" {
 }
 
 locals {
-  tags = {
-    project = var.project
-  }
+  tags = { project = var.project }
 }
 
 data "aws_caller_identity" "current" {}
@@ -52,7 +50,7 @@ resource "aws_s3_bucket_public_access_block" "transcripts" {
   restrict_public_buckets = true
 }
 
-# --- DynamoDB: sessions ---
+# --- DynamoDB: sessions (charts + transcripts) ---
 resource "aws_dynamodb_table" "sessions" {
   name         = "${var.project}-sessions"
   billing_mode = "PAY_PER_REQUEST"
@@ -64,28 +62,53 @@ resource "aws_dynamodb_table" "sessions" {
   tags = local.tags
 }
 
-# --- DynamoDB: chart-templates ---
-resource "aws_dynamodb_table" "chart_templates" {
-  name         = "${var.project}-chart-templates"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "templateId"
-  attribute {
-    name = "templateId"
-    type = "S"
-  }
+# --- Cognito Identity Pool (unauthenticated for POC) ---
+resource "aws_cognito_identity_pool" "transcribe_pool" {
+  identity_pool_name               = "${var.project}-identity-pool"
+  allow_unauthenticated_identities = true
+  allow_classic_flow               = true
+  tags                             = local.tags
+}
+
+resource "aws_iam_role" "cognito_unauth_role" {
+  name = "${var.project}-cognito-unauth-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = { Federated = "cognito-identity.amazonaws.com" }
+      Action   = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "cognito-identity.amazonaws.com:aud" = aws_cognito_identity_pool.transcribe_pool.id
+        }
+        "ForAnyValue:StringLike" = {
+          "cognito-identity.amazonaws.com:amr" = "unauthenticated"
+        }
+      }
+    }]
+  })
   tags = local.tags
 }
 
-# --- DynamoDB: connections ---
-resource "aws_dynamodb_table" "connections" {
-  name         = "${var.project}-connections"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "connectionId"
-  attribute {
-    name = "connectionId"
-    type = "S"
+resource "aws_iam_role_policy" "cognito_unauth_policy" {
+  name = "${var.project}-cognito-unauth-policy"
+  role = aws_iam_role.cognito_unauth_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["transcribe:StartStreamTranscriptionWebSocket"]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_cognito_identity_pool_roles_attachment" "main" {
+  identity_pool_id = aws_cognito_identity_pool.transcribe_pool.id
+  roles = {
+    unauthenticated = aws_iam_role.cognito_unauth_role.arn
   }
-  tags = local.tags
 }
 
 # --- IAM Role: Lambda execution role ---
@@ -94,8 +117,8 @@ resource "aws_iam_role" "lambda_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
@@ -124,74 +147,22 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:DeleteItem",
-          "dynamodb:Query",
           "dynamodb:Scan"
         ]
-        Resource = [
-          aws_dynamodb_table.sessions.arn,
-          aws_dynamodb_table.chart_templates.arn,
-          aws_dynamodb_table.connections.arn
-        ]
+        Resource = aws_dynamodb_table.sessions.arn
       },
       {
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:GetObject"
-        ]
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
         Resource = "${aws_s3_bucket.transcripts.arn}/*"
       },
       {
-        Effect = "Allow"
-        Action = [
-          "transcribe:StartStreamTranscription",
-          "transcribe:StartStreamTranscriptionWebSocket"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel"
-        ]
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel"]
         Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/*"
       },
-      {
-        Effect = "Allow"
-        Action = [
-          "execute-api:ManageConnections"
-        ]
-        Resource = "arn:aws:execute-api:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*/*"
-      }
-    ]
-  })
-}
 
-# --- Seed chart-templates with Neuromodulator template ---
-resource "aws_dynamodb_table_item" "neuromodulator_template" {
-  table_name = aws_dynamodb_table.chart_templates.name
-  hash_key   = aws_dynamodb_table.chart_templates.hash_key
-  item = jsonencode({
-    templateId             = { S = "neuromodulator" }
-    templateName           = { S = "Neuromodulator Treatment Form" }
-    fields = { S = jsonencode({
-      patientId                = ""
-      providerId               = ""
-      date                     = ""
-      chiefComplaint           = ""
-      treatmentPerformed       = ""
-      areasOfTreatment         = []
-      productsUsed             = [{ name = "", units = "", lot = "" }]
-      dosage                   = ""
-      technique                = ""
-      skinAssessment           = ""
-      adverseReactions         = ""
-      postTreatmentInstructions = ""
-      followUpDate             = ""
-      providerNotes            = ""
-      consentObtained          = true
-      photographsTaken         = false
-    })}
+    ]
   })
 }
 
@@ -204,14 +175,18 @@ output "sessions_table_name" {
   value = aws_dynamodb_table.sessions.name
 }
 
-output "chart_templates_table_name" {
-  value = aws_dynamodb_table.chart_templates.name
-}
-
-output "connections_table_name" {
-  value = aws_dynamodb_table.connections.name
-}
-
 output "lambda_role_arn" {
   value = aws_iam_role.lambda_role.arn
+}
+
+output "cognito_identity_pool_id" {
+  value = aws_cognito_identity_pool.transcribe_pool.id
+}
+
+output "cognito_unauth_role_arn" {
+  value = aws_iam_role.cognito_unauth_role.arn
+}
+
+output "region" {
+  value = var.region
 }
