@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MSI Transcribe POC — Medical Spa Charting</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;color:#333}
+header{background:#1a73e8;color:#fff;padding:12px 24px;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:18px}
+.mode-toggle{display:flex;gap:8px}
+.mode-toggle button{padding:6px 14px;border:1px solid #fff;background:transparent;color:#fff;border-radius:4px;cursor:pointer;font-size:13px}
+.mode-toggle button.active{background:#fff;color:#1a73e8}
+.container{display:flex;gap:16px;padding:16px;height:calc(100vh - 52px)}
+.panel{background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.12);padding:16px;overflow-y:auto}
+.left{flex:1;display:flex;flex-direction:column}
+.right{flex:1;display:flex;flex-direction:column}
+.sidebar{width:260px;display:flex;flex-direction:column}
+h2{font-size:15px;margin-bottom:12px;color:#1a73e8}
+.controls{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.controls select,.controls input{padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.btn{padding:8px 16px;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:500}
+.btn-start{background:#34a853;color:#fff}
+.btn-end{background:#ea4335;color:#fff}
+.btn-save{background:#1a73e8;color:#fff}
+.btn-extract{background:#f9ab00;color:#fff}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+#transcript-area{flex:1;border:1px solid #e0e0e0;border-radius:4px;padding:12px;min-height:200px;font-size:14px;line-height:1.6;overflow-y:auto;background:#fafafa}
+#transcript-area .partial{color:#999}
+#transcript-area .final{color:#333}
+#dictation-input{width:100%;min-height:200px;border:1px solid #e0e0e0;border-radius:4px;padding:12px;font-size:14px;line-height:1.6;resize:vertical;display:none}
+.chart-form{flex:1;overflow-y:auto}
+.chart-form label{display:block;font-size:12px;color:#666;margin-top:10px;margin-bottom:2px}
+.chart-form input,.chart-form textarea,.chart-form select{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px}
+.chart-form textarea{min-height:60px;resize:vertical}
+.confidence-badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;color:#fff}
+.conf-high{background:#34a853}
+.conf-med{background:#f9ab00}
+.conf-low{background:#ea4335}
+.session-item{padding:8px;border-bottom:1px solid #eee;cursor:pointer;font-size:13px}
+.session-item:hover{background:#f0f0f0}
+.session-item .time{color:#999;font-size:11px}
+.status-bar{padding:8px 12px;background:#e8f0fe;border-radius:4px;margin-bottom:12px;font-size:13px;display:flex;align-items:center;gap:8px}
+.status-bar .dot{width:8px;height:8px;border-radius:50%;background:#999}
+.status-bar .dot.recording{background:#ea4335;animation:pulse 1s infinite}
+.status-bar .dot.processing{background:#f9ab00;animation:pulse 1s infinite}
+.status-bar .dot.ready{background:#34a853}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.sample-script{font-size:12px;color:#666;background:#f9f9f9;padding:8px;border-radius:4px;margin-top:8px;line-height:1.5;cursor:pointer}
+.sample-script:hover{background:#eef}
+#loading-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.3);z-index:100;justify-content:center;align-items:center}
+#loading-overlay .spinner{width:40px;height:40px;border:4px solid #fff;border-top-color:#1a73e8;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏥 MSI Medical Spa — Charting Assistant</h1>
+  <div class="mode-toggle">
+    <button id="btn-live" class="active" onclick="setMode('live')">🎤 Live Session</button>
+    <button id="btn-dictation" onclick="setMode('dictation')">📝 Post-Session Dictation</button>
+  </div>
+</header>
+<div class="container">
+  <div class="panel left">
+    <h2>Transcript</h2>
+    <div class="status-bar"><div class="dot ready" id="status-dot"></div><span id="status-text">Ready</span></div>
+    <div class="controls">
+      <select id="template-select">
+        <option value="neuromodulator">Neuromodulator (Botox/Dysport)</option>
+        <option value="filler">Filler (Juvederm/Restylane)</option>
+        <option value="aesthetic">Aesthetic Treatment</option>
+      </select>
+      <input id="patient-id" placeholder="Patient ID" value="P-001">
+      <input id="provider-id" placeholder="Provider ID" value="DR-001">
+    </div>
+    <div class="controls">
+      <button class="btn btn-start" id="btn-start" onclick="startSession()">▶ Start Session</button>
+      <button class="btn btn-end" id="btn-stop" onclick="endSession()" disabled>⏹ End Session</button>
+      <button class="btn btn-extract" id="btn-extract" onclick="extractFromDictation()" style="display:none">🔍 Extract Chart</button>
+    </div>
+    <div id="transcript-area"></div>
+    <textarea id="dictation-input" placeholder="Paste or type your post-session notes here..."></textarea>
+    <div class="sample-script" onclick="useSample()" title="Click to use this sample">
+      <strong>Sample dictation:</strong> "Patient is a 42-year-old female presenting for neuromodulator treatment. Chief complaint is moderate to severe glabellar lines and horizontal forehead lines. Performed injection of 20 units Botox to the frontalis, 20 units to the glabella, and 12 units to the lateral orbicularis oculi bilaterally. Lot number BX-2026-0412. Technique used was standard perpendicular injection with 30-gauge needle. No adverse reactions noted. Consent obtained and photographs taken pre and post treatment. Follow up in 2 weeks. Post treatment instructions given: avoid rubbing the area, no strenuous exercise for 24 hours."
+    </div>
+  </div>
+  <div class="panel right">
+    <h2>Chart — <span id="chart-template-label">Neuromodulator Treatment Form</span></h2>
+    <div class="chart-form" id="chart-form"></div>
+    <div class="controls" style="margin-top:12px">
+      <button class="btn btn-save" id="btn-save" onclick="saveChart()" disabled>💾 Save Chart</button>
+    </div>
+  </div>
+  <div class="panel sidebar">
+    <h2>Session History</h2>
+    <div id="session-list"><em style="color:#999;font-size:13px">No sessions yet</em></div>
+  </div>
+</div>
+<div id="loading-overlay"><div class="spinner"></div></div>
+<script>
+// CONFIG — will be replaced by terraform outputs
+const CONFIG = {
+  API_URL: '%%API_URL%%',
+  REGION: '%%REGION%%',
+  IDENTITY_POOL_ID: '%%IDENTITY_POOL_ID%%',
+  VOCABULARY_NAME: '%%VOCABULARY_NAME%%'
+};
+
+let currentMode = 'live';
+let currentSessionId = null;
+let accumulatedTranscript = '';
+let mediaRecorder = null;
+let audioContext = null;
+let transcribeClient = null;
+let isRecording = false;
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('btn-live').classList.toggle('active', mode === 'live');
+  document.getElementById('btn-dictation').classList.toggle('active', mode === 'dictation');
+  document.getElementById('transcript-area').style.display = mode === 'live' ? 'block' : 'none';
+  document.getElementById('dictation-input').style.display = mode === 'dictation' ? 'block' : 'none';
+  document.getElementById('btn-start').style.display = mode === 'live' ? 'inline-block' : 'none';
+  document.getElementById('btn-stop').style.display = mode === 'live' ? 'inline-block' : 'none';
+  document.getElementById('btn-extract').style.display = mode === 'dictation' ? 'inline-block' : 'none';
+}
+
+function setStatus(state, text) {
+  const dot = document.getElementById('status-dot');
+  dot.className = 'dot ' + state;
+  document.getElementById('status-text').textContent = text;
+}
+
+function showLoading(show) {
+  document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
+}
+
+async function apiCall(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const resp = await fetch(CONFIG.API_URL + path, opts);
+  return resp.json();
+}
+
+async function startSession() {
+  accumulatedTranscript = '';
+  document.getElementById('transcript-area').innerHTML = '';
+  clearChart();
+
+  const data = await apiCall('POST', '/sessions', {
+    patientId: document.getElementById('patient-id').value,
+    providerId: document.getElementById('provider-id').value,
+    mode: currentMode,
+    templateName: document.getElementById('template-select').value
+  });
+  currentSessionId = data.sessionId;
+
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  setStatus('recording', 'Recording — speak now...');
+
+  try {
+    await startTranscription();
+  } catch (err) {
+    console.error('Transcription error:', err);
+    setStatus('ready', 'Mic error: ' + err.message);
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled = true;
+  }
+}
+
+async function startTranscription() {
+  const credResp = await fetch(CONFIG.API_URL + '/credentials');
+  const creds = await credResp.json();
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+  audioContext = new AudioContext({ sampleRate: 16000 });
+  const source = audioContext.createMediaStreamSource(stream);
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+  // Build WebSocket URL for Transcribe Streaming
+  const url = buildTranscribeWebSocketUrl(creds);
+  const ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  transcribeClient = { ws, stream, processor, source };
+
+  ws.onopen = () => {
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    processor.onaudioprocess = (e) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const pcm = e.inputBuffer.getChannelData(0);
+        const buffer = pcmToEventStream(pcm);
+        ws.send(buffer);
+      }
+    };
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = decodeTranscribeMessage(event.data);
+      if (msg && msg.Transcript && msg.Transcript.Results) {
+        for (const result of msg.Transcript.Results) {
+          if (result.Alternatives && result.Alternatives.length > 0) {
+            const text = result.Alternatives[0].Transcript;
+            if (!result.IsPartial) {
+              accumulatedTranscript += text + ' ';
+              appendTranscript(text, 'final');
+            } else {
+              updatePartial(text);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Message decode error:', err);
+    }
+  };
+
+  ws.onerror = (err) => console.error('WebSocket error:', err);
+  ws.onclose = () => console.log('Transcribe WebSocket closed');
+}
+
+function buildTranscribeWebSocketUrl(creds) {
+  const region = CONFIG.REGION;
+  const endpoint = `transcribestreaming.${region}.amazonaws.com:8443`;
+  const path = '/stream-transcription-websocket';
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+  const dateOnly = dateStamp.substring(0, 8);
+
+  const params = new URLSearchParams({
+    'language-code': 'en-US',
+    'media-encoding': 'pcm',
+    'sample-rate': '16000',
+    'vocabulary-name': CONFIG.VOCABULARY_NAME
+  });
+
+  // Use pre-signed URL approach with Cognito credentials
+  // For POC, we'll use the AWS SDK v4 signing
+  const queryString = params.toString();
+  const url = `wss://${endpoint}${path}?${queryString}`;
+
+  // For the POC, we'll use a simpler approach: pass credentials as query params
+  // This uses the Transcribe WebSocket presigned URL format
+  return createPresignedUrl(creds, region, dateStamp, dateOnly, path, params);
+}
+
+function createPresignedUrl(creds, region, dateStamp, dateOnly, path, params) {
+  // Implement AWS Signature V4 for WebSocket
+  const host = `transcribestreaming.${region}.amazonaws.com`;
+  const service = 'transcribe';
+  const algorithm = 'AWS4-HMAC-SHA256';
+  const credentialScope = `${dateOnly}/${region}/${service}/aws4_request`;
+  const credential = `${creds.accessKeyId}/${credentialScope}`;
+
+  const canonicalQuerystring = [
+    `X-Amz-Algorithm=${algorithm}`,
+    `X-Amz-Credential=${encodeURIComponent(credential)}`,
+    `X-Amz-Date=${dateStamp}`,
+    `X-Amz-Expires=300`,
+    `X-Amz-Security-Token=${encodeURIComponent(creds.sessionToken)}`,
+    `X-Amz-SignedHeaders=host`,
+    `language-code=en-US`,
+    `media-encoding=pcm`,
+    `sample-rate=16000`,
+    `vocabulary-name=${encodeURIComponent(CONFIG.VOCABULARY_NAME)}`
+  ].sort().join('&');
+
+  const canonicalRequest = [
+    'GET', path, canonicalQuerystring,
+    `host:${host}\n`, 'host',
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+  ].join('\n');
+
+  const stringToSign = [
+    algorithm, dateStamp, credentialScope,
+    sha256(canonicalRequest)
+  ].join('\n');
+
+  const signingKey = getSignatureKey(creds.secretAccessKey, dateOnly, region, service);
+  const signature = hmacHex(signingKey, stringToSign);
+
+  return `wss://${host}:8443${path}?${canonicalQuerystring}&X-Amz-Signature=${signature}`;
+}
+
+// Crypto helpers using SubtleCrypto
+async function sha256Async(message) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(message);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Synchronous SHA-256 using a simple implementation for signing
+function sha256(message) {
+  // Use a synchronous approach - we'll precompute
+  return sha256Sync(message);
+}
+
+// Minimal SHA-256 for browser signing
+function sha256Sync(str) {
+  const utf8 = new TextEncoder().encode(str);
+  // Use the jsSHA-like approach inline
+  return syncSha256(utf8);
+}
+
+function syncSha256(data) {
+  const K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ];
+  let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+  const l = data.length;
+  const bl = l * 8;
+  const padded = new Uint8Array(((l + 9 + 63) & ~63));
+  padded.set(data);
+  padded[l] = 0x80;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(padded.length - 4, bl, false);
+  for (let off = 0; off < padded.length; off += 64) {
+    const w = new Int32Array(64);
+    for (let i = 0; i < 16; i++) w[i] = dv.getInt32(off + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = (ror(w[i-15],7)^ror(w[i-15],18)^(w[i-15]>>>3));
+      const s1 = (ror(w[i-2],17)^ror(w[i-2],19)^(w[i-2]>>>10));
+      w[i] = (w[i-16]+s0+w[i-7]+s1)|0;
+    }
+    let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+    for (let i = 0; i < 64; i++) {
+      const S1=(ror(e,6)^ror(e,11)^ror(e,25));
+      const ch=((e&f)^(~e&g));
+      const t1=(h+S1+ch+K[i]+w[i])|0;
+      const S0=(ror(a,2)^ror(a,13)^ror(a,22));
+      const maj=((a&b)^(a&c)^(b&c));
+      const t2=(S0+maj)|0;
+      h=g;g=f;f=e;e=(d+t1)|0;d=c;c=b;b=a;a=(t1+t2)|0;
+    }
+    h0=(h0+a)|0;h1=(h1+b)|0;h2=(h2+c)|0;h3=(h3+d)|0;h4=(h4+e)|0;h5=(h5+f)|0;h6=(h6+g)|0;h7=(h7+h)|0;
+  }
+  return [h0,h1,h2,h3,h4,h5,h6,h7].map(v=>(v>>>0).toString(16).padStart(8,'0')).join('');
+}
+function ror(v,n){return(v>>>n)|(v<<(32-n));}
+</script>
+<script>
+// HMAC-SHA256 helpers
+function hmacSha256(key, message) {
+  const blockSize = 64;
+  let keyBytes;
+  if (typeof key === 'string') {
+    keyBytes = new TextEncoder().encode(key);
+  } else {
+    keyBytes = key;
+  }
+  if (keyBytes.length > blockSize) {
+    keyBytes = hexToBytes(syncSha256(keyBytes));
+  }
+  const iPad = new Uint8Array(blockSize + (typeof message === 'string' ? new TextEncoder().encode(message).length : message.length));
+  const oPad = new Uint8Array(blockSize);
+  for (let i = 0; i < blockSize; i++) {
+    iPad[i] = (keyBytes[i] || 0) ^ 0x36;
+    oPad[i] = (keyBytes[i] || 0) ^ 0x5c;
+  }
+  const msgBytes = typeof message === 'string' ? new TextEncoder().encode(message) : message;
+  iPad.set(msgBytes, blockSize);
+  const innerHash = hexToBytes(syncSha256(iPad.subarray(0, blockSize + msgBytes.length)));
+  const outer = new Uint8Array(blockSize + innerHash.length);
+  outer.set(oPad);
+  outer.set(innerHash, blockSize);
+  return syncSha256(outer);
+}
+
+function hmacSha256Bytes(key, message) {
+  return hexToBytes(hmacSha256(key, message));
+}
+
+function hmacHex(key, message) {
+  return hmacSha256(key, message);
+}
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  return bytes;
+}
+
+function getSignatureKey(secretKey, dateStamp, region, service) {
+  const kDate = hmacSha256Bytes('AWS4' + secretKey, dateStamp);
+  const kRegion = hmacSha256Bytes(kDate, region);
+  const kService = hmacSha256Bytes(kRegion, service);
+  return hmacSha256Bytes(kService, 'aws4_request');
+}
+
+// Transcribe event stream encoding/decoding
+function pcmToEventStream(pcmFloat32) {
+  const pcm16 = new Int16Array(pcmFloat32.length);
+  for (let i = 0; i < pcmFloat32.length; i++) {
+    const s = Math.max(-1, Math.min(1, pcmFloat32[i]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  const audioBytes = new Uint8Array(pcm16.buffer);
+
+  // AWS event stream binary format
+  const headers = encodeEventStreamHeaders({
+    ':message-type': { type: 7, value: 'event' },
+    ':event-type': { type: 7, value: 'AudioEvent' },
+    ':content-type': { type: 7, value: 'application/octet-stream' }
+  });
+
+  const totalLength = 4 + 4 + 4 + headers.length + audioBytes.length + 4;
+  const prelude = new ArrayBuffer(8);
+  const preludeView = new DataView(prelude);
+  preludeView.setUint32(0, totalLength, false);
+  preludeView.setUint32(4, headers.length, false);
+
+  const preludeBytes = new Uint8Array(prelude);
+  const preludeCrc = crc32(preludeBytes);
+
+  const message = new Uint8Array(totalLength);
+  const msgView = new DataView(message.buffer);
+  message.set(preludeBytes, 0);
+  msgView.setUint32(8, preludeCrc, false);
+  message.set(headers, 12);
+  message.set(audioBytes, 12 + headers.length);
+  const msgCrc = crc32(message.subarray(0, totalLength - 4));
+  msgView.setUint32(totalLength - 4, msgCrc, false);
+
+  return message.buffer;
+}
+
+function encodeEventStreamHeaders(headers) {
+  const parts = [];
+  for (const [name, { type, value }] of Object.entries(headers)) {
+    const nameBytes = new TextEncoder().encode(name);
+    const valueBytes = new TextEncoder().encode(value);
+    const header = new Uint8Array(1 + nameBytes.length + 1 + 2 + valueBytes.length);
+    header[0] = nameBytes.length;
+    header.set(nameBytes, 1);
+    header[1 + nameBytes.length] = type;
+    const hView = new DataView(header.buffer);
+    hView.setUint16(1 + nameBytes.length + 1, valueBytes.length, false);
+    header.set(valueBytes, 1 + nameBytes.length + 1 + 2);
+    parts.push(header);
+  }
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) { result.set(p, offset); offset += p.length; }
+  return result;
+}
+
+function decodeTranscribeMessage(buffer) {
+  try {
+    const view = new DataView(buffer);
+    const totalLen = view.getUint32(0, false);
+    const headersLen = view.getUint32(4, false);
+    const payloadStart = 12 + headersLen;
+    const payloadEnd = totalLen - 4;
+    if (payloadEnd <= payloadStart) return null;
+    const payload = new Uint8Array(buffer, payloadStart, payloadEnd - payloadStart);
+    const text = new TextDecoder().decode(payload);
+    return JSON.parse(text);
+  } catch { return null; }
+}
+
+// CRC32 table
+const crc32Table = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
+  let c = i;
+  for (let j = 0; j < 8; j++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+  crc32Table[i] = c;
+}
+function crc32(data) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) crc = crc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function appendTranscript(text, cls) {
+  const area = document.getElementById('transcript-area');
+  const partial = area.querySelector('.partial');
+  if (partial) partial.remove();
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = text + ' ';
+  area.appendChild(span);
+  area.scrollTop = area.scrollHeight;
+}
+
+function updatePartial(text) {
+  const area = document.getElementById('transcript-area');
+  let partial = area.querySelector('.partial');
+  if (!partial) {
+    partial = document.createElement('span');
+    partial.className = 'partial';
+    area.appendChild(partial);
+  }
+  partial.textContent = text;
+  area.scrollTop = area.scrollHeight;
+}
+
+async function endSession() {
+  setStatus('processing', 'Extracting chart...');
+  document.getElementById('btn-stop').disabled = true;
+
+  // Stop recording
+  if (transcribeClient) {
+    if (transcribeClient.ws.readyState === WebSocket.OPEN) transcribeClient.ws.close();
+    transcribeClient.stream.getTracks().forEach(t => t.stop());
+    transcribeClient.processor.disconnect();
+    transcribeClient.source.disconnect();
+    if (audioContext) audioContext.close();
+    transcribeClient = null;
+  }
+
+  if (!accumulatedTranscript.trim()) {
+    setStatus('ready', 'No transcript captured');
+    document.getElementById('btn-start').disabled = false;
+    return;
+  }
+
+  showLoading(true);
+  try {
+    const result = await apiCall('POST', `/sessions/${currentSessionId}/end`, {
+      transcriptText: accumulatedTranscript.trim()
+    });
+    renderChart(result.chart, result.confidence);
+    document.getElementById('btn-save').disabled = false;
+    setStatus('ready', 'Chart extracted — review and save');
+    loadSessions();
+  } catch (err) {
+    console.error(err);
+    setStatus('ready', 'Error: ' + err.message);
+  }
+  showLoading(false);
+  document.getElementById('btn-start').disabled = false;
+}
+
+async function extractFromDictation() {
+  const text = document.getElementById('dictation-input').value.trim();
+  if (!text) return alert('Please enter or paste a transcript first.');
+
+  setStatus('processing', 'Creating session and extracting chart...');
+  showLoading(true);
+
+  try {
+    const session = await apiCall('POST', '/sessions', {
+      patientId: document.getElementById('patient-id').value,
+      providerId: document.getElementById('provider-id').value,
+      mode: 'dictation',
+      templateName: document.getElementById('template-select').value
+    });
+    currentSessionId = session.sessionId;
+
+    const result = await apiCall('POST', `/sessions/${currentSessionId}/end`, {
+      transcriptText: text
+    });
+    renderChart(result.chart, result.confidence);
+    document.getElementById('btn-save').disabled = false;
+    setStatus('ready', 'Chart extracted — review and save');
+    loadSessions();
+  } catch (err) {
+    console.error(err);
+    setStatus('ready', 'Error: ' + err.message);
+  }
+  showLoading(false);
+}
+
+function renderChart(chart, confidence) {
+  const form = document.getElementById('chart-form');
+  form.innerHTML = '';
+  if (!chart) return;
+
+  const templateLabels = {
+    patientId: 'Patient ID', providerId: 'Provider ID', date: 'Date',
+    chiefComplaint: 'Chief Complaint', treatmentPerformed: 'Treatment Performed',
+    areasOfTreatment: 'Areas of Treatment', productsUsed: 'Products Used',
+    dosage: 'Dosage', technique: 'Technique', skinAssessment: 'Skin Assessment',
+    skinType: 'Skin Type', injectionSites: 'Injection Sites',
+    adverseReactions: 'Adverse Reactions', postTreatmentInstructions: 'Post-Treatment Instructions',
+    followUpDate: 'Follow-Up Date', providerNotes: 'Provider Notes',
+    consentObtained: 'Consent Obtained', photographsTaken: 'Photographs Taken'
+  };
+
+  for (const [key, value] of Object.entries(chart)) {
+    const label = document.createElement('label');
+    const confScore = confidence && confidence[key] !== undefined ? confidence[key] : null;
+    let confBadge = '';
+    if (confScore !== null) {
+      const cls = confScore >= 0.7 ? 'conf-high' : confScore >= 0.4 ? 'conf-med' : 'conf-low';
+      confBadge = `<span class="confidence-badge ${cls}">${(confScore * 100).toFixed(0)}%</span>`;
+    }
+    label.innerHTML = (templateLabels[key] || key) + confBadge;
+    form.appendChild(label);
+
+    if (typeof value === 'boolean') {
+      const sel = document.createElement('select');
+      sel.dataset.field = key;
+      sel.innerHTML = `<option value="true" ${value ? 'selected' : ''}>Yes</option><option value="false" ${!value ? 'selected' : ''}>No</option>`;
+      form.appendChild(sel);
+    } else if (Array.isArray(value)) {
+      const ta = document.createElement('textarea');
+      ta.dataset.field = key;
+      ta.value = JSON.stringify(value, null, 2);
+      form.appendChild(ta);
+    } else if (typeof value === 'object' && value !== null) {
+      const ta = document.createElement('textarea');
+      ta.dataset.field = key;
+      ta.value = JSON.stringify(value, null, 2);
+      form.appendChild(ta);
+    } else {
+      const longFields = ['chiefComplaint', 'postTreatmentInstructions', 'providerNotes', 'adverseReactions', 'skinAssessment'];
+      if (longFields.includes(key)) {
+        const ta = document.createElement('textarea');
+        ta.dataset.field = key;
+        ta.value = value || '';
+        form.appendChild(ta);
+      } else {
+        const inp = document.createElement('input');
+        inp.dataset.field = key;
+        inp.value = value || '';
+        form.appendChild(inp);
+      }
+    }
+  }
+}
+
+function clearChart() {
+  document.getElementById('chart-form').innerHTML = '';
+  document.getElementById('btn-save').disabled = true;
+}
+
+function getChartFromForm() {
+  const chart = {};
+  document.querySelectorAll('#chart-form [data-field]').forEach(el => {
+    const key = el.dataset.field;
+    if (el.tagName === 'SELECT') {
+      chart[key] = el.value === 'true';
+    } else if (el.tagName === 'TEXTAREA') {
+      try { chart[key] = JSON.parse(el.value); } catch { chart[key] = el.value; }
+    } else {
+      chart[key] = el.value;
+    }
+  });
+  return chart;
+}
+
+async function saveChart() {
+  if (!currentSessionId) return;
+  showLoading(true);
+  try {
+    await apiCall('POST', `/sessions/${currentSessionId}/save`, { chart: getChartFromForm() });
+    setStatus('ready', 'Chart saved ✓');
+    loadSessions();
+  } catch (err) {
+    setStatus('ready', 'Save error: ' + err.message);
+  }
+  showLoading(false);
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function loadSessions() {
+  try {
+    const data = await apiCall('GET', '/sessions');
+    const list = document.getElementById('session-list');
+    if (!data.sessions || data.sessions.length === 0) {
+      list.innerHTML = '<em style="color:#999;font-size:13px">No sessions yet</em>';
+      return;
+    }
+    const sorted = data.sessions.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    list.innerHTML = sorted.map(s => `
+      <div class="session-item" onclick="loadSession('${esc(s.sessionId)}')">
+        <div><strong>${esc(s.templateType || 'neuromodulator')}</strong> — ${esc(s.status || 'unknown')}</div>
+        <div class="time">${s.createdAt ? esc(new Date(s.createdAt).toLocaleString()) : 'N/A'}</div>
+        <div class="time">Patient: ${esc(s.patientId || 'N/A')} | ${esc(s.mode || 'live')}</div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error('Failed to load sessions:', err);
+  }
+}
+
+async function loadSession(sessionId) {
+  showLoading(true);
+  try {
+    const data = await apiCall('GET', `/sessions/${sessionId}`);
+    currentSessionId = sessionId;
+    if (data.transcriptText) {
+      const area = document.getElementById('transcript-area');
+      area.innerHTML = '';
+      const span = document.createElement('span');
+      span.className = 'final';
+      span.textContent = data.transcriptText;
+      area.appendChild(span);
+      document.getElementById('dictation-input').value = data.transcriptText;
+    }
+    if (data.chart) {
+      renderChart(data.chart, data.confidence);
+      document.getElementById('btn-save').disabled = false;
+    }
+    setStatus('ready', `Loaded session ${sessionId.substring(0, 8)}...`);
+  } catch (err) {
+    setStatus('ready', 'Error loading session: ' + err.message);
+  }
+  showLoading(false);
+}
+
+function useSample() {
+  const sample = "Patient is a 42-year-old female presenting for neuromodulator treatment. Chief complaint is moderate to severe glabellar lines and horizontal forehead lines. Performed injection of 20 units Botox to the frontalis, 20 units to the glabella, and 12 units to the lateral orbicularis oculi bilaterally. Lot number BX-2026-0412. Technique used was standard perpendicular injection with 30-gauge needle. No adverse reactions noted. Consent obtained and photographs taken pre and post treatment. Follow up in 2 weeks. Post treatment instructions given: avoid rubbing the area, no strenuous exercise for 24 hours.";
+  if (currentMode === 'dictation') {
+    document.getElementById('dictation-input').value = sample;
+  } else {
+    accumulatedTranscript = sample;
+    const area = document.getElementById('transcript-area');
+    area.innerHTML = '';
+    const span = document.createElement('span');
+    span.className = 'final';
+    span.textContent = sample;
+    area.appendChild(span);
+  }
+}
+
+// Load sessions on page load
+loadSessions();
+</script>
+</body>
+</html>

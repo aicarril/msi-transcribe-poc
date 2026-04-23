@@ -766,6 +766,117 @@ resource "aws_api_gateway_stage" "prod" {
   tags          = local.tags
 }
 
+# --- S3 Bucket for Demo UI ---
+resource "aws_s3_bucket" "demo" {
+  bucket = "${var.project}-demo-${data.aws_caller_identity.current.account_id}"
+  tags   = local.tags
+}
+
+resource "aws_s3_bucket_public_access_block" "demo" {
+  bucket                  = aws_s3_bucket.demo.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# CloudFront OAC
+resource "aws_cloudfront_origin_access_control" "demo" {
+  name                              = "${var.project}-demo-oac"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+# CloudFront Distribution
+resource "aws_cloudfront_distribution" "demo" {
+  enabled             = true
+  default_root_object = "index.html"
+  tags                = local.tags
+
+  origin {
+    domain_name              = aws_s3_bucket.demo.bucket_regional_domain_name
+    origin_id                = "s3-demo"
+    origin_access_control_id = aws_cloudfront_origin_access_control.demo.id
+  }
+
+  default_cache_behavior {
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    target_origin_id       = "s3-demo"
+    viewer_protocol_policy = "redirect-to-https"
+    forwarded_values {
+      query_string = false
+      cookies { forward = "none" }
+    }
+    min_ttl     = 0
+    default_ttl = 300
+    max_ttl     = 3600
+  }
+
+  custom_error_response {
+    error_code         = 404
+    response_code      = 404
+    response_page_path = "/error.html"
+  }
+
+  custom_error_response {
+    error_code         = 403
+    response_code      = 200
+    response_page_path = "/index.html"
+  }
+
+  restrictions {
+    geo_restriction { restriction_type = "none" }
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+}
+
+# S3 Bucket Policy for CloudFront OAC
+resource "aws_s3_bucket_policy" "demo" {
+  bucket = aws_s3_bucket.demo.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowCloudFrontOAC"
+      Effect    = "Allow"
+      Principal = { Service = "cloudfront.amazonaws.com" }
+      Action    = "s3:GetObject"
+      Resource  = "${aws_s3_bucket.demo.arn}/*"
+      Condition = {
+        StringEquals = {
+          "AWS:SourceArn" = aws_cloudfront_distribution.demo.arn
+        }
+      }
+    }]
+  })
+}
+
+# Upload demo files to S3 — inject config values
+resource "aws_s3_object" "demo_index" {
+  bucket       = aws_s3_bucket.demo.id
+  key          = "index.html"
+  content      = replace(replace(replace(replace(
+    file("${path.module}/../demo/index.html"),
+    "%%API_URL%%", aws_api_gateway_stage.prod.invoke_url),
+    "%%REGION%%", var.region),
+    "%%IDENTITY_POOL_ID%%", aws_cognito_identity_pool.transcribe_pool.id),
+    "%%VOCABULARY_NAME%%", aws_transcribe_vocabulary.medical_spa.vocabulary_name)
+  content_type = "text/html"
+  etag         = md5(file("${path.module}/../demo/index.html"))
+}
+
+resource "aws_s3_object" "demo_error" {
+  bucket       = aws_s3_bucket.demo.id
+  key          = "error.html"
+  source       = "${path.module}/../demo/error.html"
+  content_type = "text/html"
+  etag         = filemd5("${path.module}/../demo/error.html")
+}
+
 # --- Outputs ---
 output "s3_bucket_name" {
   value = aws_s3_bucket.transcripts.id
@@ -796,5 +907,13 @@ output "custom_vocabulary_name" {
 }
 
 output "api_url" {
-  value = "${aws_api_gateway_stage.prod.invoke_url}"
+  value = aws_api_gateway_stage.prod.invoke_url
+}
+
+output "demo_url" {
+  value = "https://${aws_cloudfront_distribution.demo.domain_name}"
+}
+
+output "demo_bucket" {
+  value = aws_s3_bucket.demo.id
 }
