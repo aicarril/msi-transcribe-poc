@@ -1,0 +1,174 @@
+# Verification Report — Subtask 1: Terraform Foundation
+
+**Date**: 2026-04-23  
+**Verifier**: verifier-1  
+**Overall**: ✅ PASS (all 5 checks passed)
+
+---
+
+## Step 1: S3 Bucket
+
+**Resource**: `msi-transcribe-poc-transcripts-779846822196`  
+**Result**: ✅ PASS
+
+```
+=== head-bucket ===
+{
+  "HTTPStatusCode": 200,
+  "BucketRegion": "us-east-1"
+}
+
+=== get-bucket-encryption ===
+{
+  "Rules": [
+    {
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+      },
+      "BucketKeyEnabled": false
+    }
+  ]
+}
+
+=== get-public-access-block ===
+{
+  "BlockPublicAcls": true,
+  "IgnorePublicAcls": true,
+  "BlockPublicPolicy": true,
+  "RestrictPublicBuckets": true
+}
+```
+
+- Bucket exists in us-east-1
+- Server-side encryption: AES256
+- All public access blocked
+
+---
+
+## Step 2: DynamoDB Table
+
+**Resource**: `msi-transcribe-poc-sessions`  
+**Result**: ✅ PASS
+
+```
+=== describe-table ===
+{
+  "TableName": "msi-transcribe-poc-sessions",
+  "TableStatus": "ACTIVE",
+  "KeySchema": [
+    {
+      "AttributeName": "sessionId",
+      "KeyType": "HASH"
+    }
+  ],
+  "BillingMode": "PAY_PER_REQUEST"
+}
+```
+
+- Table is ACTIVE
+- Partition key: `sessionId` (String, HASH)
+- Billing: PAY_PER_REQUEST (on-demand)
+
+---
+
+## Step 3: Cognito Identity Pool
+
+**Resource**: `us-east-1:1e71ebd2-85a0-4f9d-9d19-0758c1eb1443`  
+**Result**: ✅ PASS
+
+```
+=== describe-identity-pool ===
+{
+  "IdentityPoolName": "msi-transcribe-poc-identity-pool",
+  "AllowUnauthenticatedIdentities": true,
+  "AllowClassicFlow": true
+}
+
+=== get-id + get-credentials-for-identity ===
+{
+  "IdentityId": "us-east-1:b5927e29-349b-c91b-9f6d-8e583b6f125f",
+  "HasAccessKeyId": true,
+  "HasSecretKey": true,
+  "HasSessionToken": true
+}
+```
+
+- Unauthenticated identities: enabled
+- Classic flow: enabled
+- Successfully obtained temporary credentials (AccessKeyId, SecretKey, SessionToken)
+
+---
+
+## Step 4: Cognito Unauth Role (Transcribe Permission)
+
+**Resource**: `msi-transcribe-poc-cognito-unauth-role`  
+**Result**: ✅ PASS
+
+```
+=== get-role ===
+{
+  "RoleName": "msi-transcribe-poc-cognito-unauth-role",
+  "Arn": "arn:aws:iam::779846822196:role/msi-transcribe-poc-cognito-unauth-role"
+}
+
+=== inline policy: msi-transcribe-poc-cognito-unauth-policy ===
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": ["transcribe:StartStreamTranscriptionWebSocket"],
+      "Effect": "Allow",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+- Role exists and is attached to Cognito Identity Pool
+- Has `transcribe:StartStreamTranscriptionWebSocket` permission
+
+---
+
+## Step 5: Lambda Execution Role
+
+**Resource**: `msi-transcribe-poc-lambda-role`  
+**Result**: ✅ PASS
+
+```
+=== get-role ===
+{
+  "RoleName": "msi-transcribe-poc-lambda-role",
+  "Arn": "arn:aws:iam::779846822196:role/msi-transcribe-poc-lambda-role"
+}
+
+=== inline policy: msi-transcribe-poc-lambda-policy ===
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Effect": "Allow",
+      "Resource": "arn:aws:logs:us-east-1:779846822196:*"
+    },
+    {
+      "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Scan"],
+      "Effect": "Allow",
+      "Resource": "arn:aws:dynamodb:us-east-1:779846822196:table/msi-transcribe-poc-sessions"
+    },
+    {
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Effect": "Allow",
+      "Resource": "arn:aws:s3:::msi-transcribe-poc-transcripts-779846822196/*"
+    },
+    {
+      "Action": ["bedrock:InvokeModel"],
+      "Effect": "Allow",
+      "Resource": "arn:aws:bedrock:us-east-1::foundation-model/*"
+    }
+  ]
+}
+```
+
+- Role exists
+- Permissions: ✅ CloudWatch Logs, ✅ DynamoDB (CRUD+Scan), ✅ S3 (Get/Put), ✅ Bedrock (InvokeModel)
+- All resources scoped to correct ARNs
