@@ -75,9 +75,9 @@ resource "aws_iam_role" "cognito_unauth_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Federated = "cognito-identity.amazonaws.com" }
-      Action   = "sts:AssumeRoleWithWebIdentity"
+      Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
           "cognito-identity.amazonaws.com:aud" = aws_cognito_identity_pool.transcribe_pool.id
@@ -132,23 +132,13 @@ resource "aws_iam_role_policy" "lambda_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
       },
       {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Scan"
-        ]
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Scan"]
         Resource = aws_dynamodb_table.sessions.arn
       },
       {
@@ -160,8 +150,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel"]
         Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/*"
-      },
-
+      }
     ]
   })
 }
@@ -172,18 +161,145 @@ resource "aws_transcribe_vocabulary" "medical_spa" {
   language_code   = "en-US"
   phrases = [
     "Botox", "Dysport", "Juvederm", "Restylane",
-    "microneedling", "dermaplaning", "chemical peel",
-    "IPL", "laser resurfacing", "hyaluronic acid",
-    "platelet-rich plasma", "PRP",
+    "microneedling", "dermaplaning", "chemical-peel",
+    "IPL", "laser-resurfacing", "hyaluronic-acid",
+    "platelet-rich-plasma", "PRP",
     "subcutaneous", "intramuscular",
     "erythema", "edema", "contraindication",
     "glabella", "nasolabial", "mentalis",
     "orbicularis", "corrugator", "procerus",
     "frontalis", "masseter",
-    "CoolSculpting", "PDO threads",
-    "neuromodulator", "dermal filler"
+    "CoolSculpting", "PDO-threads",
+    "neuromodulator", "dermal-filler"
   ]
   tags = local.tags
+}
+
+# --- Lambda: extract-chart ---
+data "archive_file" "extract_chart" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambda/extract-chart"
+  output_path = "${path.module}/extract-chart.zip"
+}
+
+resource "aws_lambda_function" "extract_chart" {
+  function_name    = "${var.project}-extract-chart"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "index.handler"
+  runtime          = "nodejs20.x"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.extract_chart.output_path
+  source_code_hash = data.archive_file.extract_chart.output_base64sha256
+  environment {
+    variables = {
+      SESSIONS_TABLE = aws_dynamodb_table.sessions.name
+      S3_BUCKET      = aws_s3_bucket.transcripts.id
+    }
+  }
+  tags = local.tags
+}
+
+# --- API Gateway REST API ---
+resource "aws_api_gateway_rest_api" "api" {
+  name = "${var.project}-api"
+  tags = local.tags
+}
+
+resource "aws_api_gateway_resource" "extract_chart" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "extract-chart"
+}
+
+# POST /extract-chart
+resource "aws_api_gateway_method" "extract_chart_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.extract_chart.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "extract_chart_post" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.extract_chart.id
+  http_method             = aws_api_gateway_method.extract_chart_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.extract_chart.invoke_arn
+}
+
+# CORS OPTIONS /extract-chart
+resource "aws_api_gateway_method" "extract_chart_options" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.extract_chart.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "extract_chart_options" {
+  rest_api_id       = aws_api_gateway_rest_api.api.id
+  resource_id       = aws_api_gateway_resource.extract_chart.id
+  http_method       = aws_api_gateway_method.extract_chart_options.http_method
+  type              = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "extract_chart_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.extract_chart.id
+  http_method = aws_api_gateway_method.extract_chart_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "extract_chart_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.extract_chart.id
+  http_method = aws_api_gateway_method.extract_chart_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.extract_chart_options]
+}
+
+resource "aws_lambda_permission" "api_gw_extract_chart" {
+  statement_id  = "AllowAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.extract_chart.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# --- API Gateway Deployment ---
+resource "aws_api_gateway_deployment" "api" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  depends_on = [
+    aws_api_gateway_integration.extract_chart_post,
+    aws_api_gateway_integration.extract_chart_options
+  ]
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.extract_chart.id,
+      aws_api_gateway_method.extract_chart_post.id,
+      aws_api_gateway_integration.extract_chart_post.id,
+    ]))
+  }
+  lifecycle { create_before_destroy = true }
+}
+
+resource "aws_api_gateway_stage" "prod" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  deployment_id = aws_api_gateway_deployment.api.id
+  stage_name    = "prod"
+  tags          = local.tags
 }
 
 # --- Outputs ---
@@ -213,4 +329,8 @@ output "region" {
 
 output "custom_vocabulary_name" {
   value = aws_transcribe_vocabulary.medical_spa.vocabulary_name
+}
+
+output "api_url" {
+  value = "${aws_api_gateway_stage.prod.invoke_url}"
 }
