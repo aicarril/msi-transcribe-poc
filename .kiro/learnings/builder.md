@@ -14,7 +14,7 @@ Written by the verifier when verification failures trace back to the builder.
 - **Root cause**: Scoper did not create an explicit subtask for the demo UI. Demo coach wrote the guide but the builder never committed/pushed it.
 - **Fix**: Always git push all files (code, demo guide, verification report) before signaling subtask complete. Demo UI is a non-negotiable deliverable.
 
-### 2026-04-23 — Bedrock model ID is legacy, Lambda returns 502
-- **Issue**: POST /extract-chart returns 502. Lambda fails with ResourceNotFoundException: "This Model is marked by provider as Legacy."
-- **Root cause**: Builder used direct model ID `anthropic.claude-3-haiku-20240307-v1:0` which is LEGACY. AWS Bedrock now requires inference profile IDs for these models (e.g., `us.anthropic.claude-3-haiku-20240307-v1:0`).
-- **Fix**: Use inference profile IDs instead of direct model IDs. Check `aws bedrock list-inference-profiles` for active profiles. For Haiku, use `us.anthropic.claude-3-haiku-20240307-v1:0` or newer `us.anthropic.claude-haiku-4-5-20251001-v1:0`.
+### 2026-04-23 — Bedrock IAM policy region mismatch with cross-region inference profile
+- **Issue**: POST /extract-chart returns 502. Lambda throws AccessDeniedException: not authorized to perform bedrock:InvokeModel on arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-haiku-20240307-v1:0.
+- **Root cause**: Lambda uses cross-region inference profile model ID `us.anthropic.claude-3-haiku-20240307-v1:0` which routes requests to us-west-2. IAM policy only grants bedrock:InvokeModel on `arn:aws:bedrock:us-east-1::foundation-model/*` — the us-west-2 ARN is not covered.
+- **Fix**: When using cross-region inference profiles (model IDs starting with `us.`, `eu.`, etc.), the IAM policy must use `arn:aws:bedrock:*::foundation-model/*` (wildcard region) because the request is routed to a different region. Alternatively, use the direct model ID without the region prefix (e.g., `anthropic.claude-3-haiku-20240307-v1:0`) to stay in the configured region.
