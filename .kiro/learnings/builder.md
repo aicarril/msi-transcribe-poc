@@ -18,3 +18,8 @@ Written by the verifier when verification failures trace back to the builder.
 - **Issue**: POST /extract-chart returns 502. Lambda throws AccessDeniedException: not authorized to perform bedrock:InvokeModel on arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-haiku-20240307-v1:0.
 - **Root cause**: Lambda uses cross-region inference profile model ID `us.anthropic.claude-3-haiku-20240307-v1:0` which routes requests to us-west-2. IAM policy only grants bedrock:InvokeModel on `arn:aws:bedrock:us-east-1::foundation-model/*` — the us-west-2 ARN is not covered.
 - **Fix**: When using cross-region inference profiles (model IDs starting with `us.`, `eu.`, etc.), the IAM policy must use `arn:aws:bedrock:*::foundation-model/*` (wildcard region) because the request is routed to a different region. Alternatively, use the direct model ID without the region prefix (e.g., `anthropic.claude-3-haiku-20240307-v1:0`) to stay in the configured region.
+
+### 2026-04-23 — Claude 3 Haiku model legacy-gated in Bedrock
+- **Issue**: After IAM fix, Lambda throws ResourceNotFoundException: "This Model is marked by provider as Legacy and you have not been actively using the model in the last 30 days."
+- **Root cause**: Builder chose us.anthropic.claude-3-haiku-20240307-v1:0 which is legacy-gated for accounts that haven't used it recently. The inference profile shows ACTIVE but the underlying model rejects requests.
+- **Fix**: Use a current-generation model for new projects. For cheap Haiku-class: us.anthropic.claude-3-5-haiku-20241022-v1:0 or us.anthropic.claude-haiku-4-5-20251001-v1:0. Always test model access before signaling build complete.

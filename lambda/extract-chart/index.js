@@ -11,7 +11,7 @@ const s3 = new S3Client();
 
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE;
 const S3_BUCKET = process.env.S3_BUCKET;
-const MODEL_ID = "us.anthropic.claude-3-haiku-20240307-v1:0";
+const MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0";
 
 const templates = {
   neuromodulator: JSON.parse(fs.readFileSync(path.join(__dirname, "neuromodulator-template.json"), "utf8")),
