@@ -153,6 +153,11 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "arn:aws:bedrock:*::foundation-model/*",
           "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${var.project}-extract-chart"
       }
     ]
   })
@@ -410,6 +415,316 @@ resource "aws_lambda_permission" "api_gw_credentials" {
   source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
 }
 
+# --- Lambda: sessions ---
+data "archive_file" "sessions" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambda/sessions"
+  output_path = "${path.module}/sessions.zip"
+}
+
+resource "aws_lambda_function" "sessions" {
+  function_name    = "${var.project}-sessions"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "index.handler"
+  runtime          = "nodejs20.x"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.sessions.output_path
+  source_code_hash = data.archive_file.sessions.output_base64sha256
+  environment {
+    variables = {
+      SESSIONS_TABLE        = aws_dynamodb_table.sessions.name
+      EXTRACT_FUNCTION_NAME = aws_lambda_function.extract_chart.function_name
+    }
+  }
+  tags = local.tags
+}
+
+resource "aws_lambda_permission" "api_gw_sessions" {
+  statement_id  = "AllowAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.sessions.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.api.execution_arn}/*/*"
+}
+
+# API Gateway: /sessions
+resource "aws_api_gateway_resource" "sessions" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "sessions"
+}
+
+# GET /sessions
+resource "aws_api_gateway_method" "sessions_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.sessions.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "sessions_get" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.sessions.id
+  http_method             = aws_api_gateway_method.sessions_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.sessions.invoke_arn
+}
+
+# POST /sessions
+resource "aws_api_gateway_method" "sessions_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.sessions.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "sessions_post" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.sessions.id
+  http_method             = aws_api_gateway_method.sessions_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.sessions.invoke_arn
+}
+
+# OPTIONS /sessions
+resource "aws_api_gateway_method" "sessions_options" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.sessions.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "sessions_options" {
+  rest_api_id       = aws_api_gateway_rest_api.api.id
+  resource_id       = aws_api_gateway_resource.sessions.id
+  http_method       = aws_api_gateway_method.sessions_options.http_method
+  type              = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "sessions_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.sessions.id
+  http_method = aws_api_gateway_method.sessions_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "sessions_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.sessions.id
+  http_method = aws_api_gateway_method.sessions_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.sessions_options]
+}
+
+# /sessions/{id}
+resource "aws_api_gateway_resource" "session_id" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_resource.sessions.id
+  path_part   = "{id}"
+}
+
+# GET /sessions/{id}
+resource "aws_api_gateway_method" "session_id_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.session_id.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "session_id_get" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.session_id.id
+  http_method             = aws_api_gateway_method.session_id_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.sessions.invoke_arn
+}
+
+# OPTIONS /sessions/{id}
+resource "aws_api_gateway_method" "session_id_options" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.session_id.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "session_id_options" {
+  rest_api_id       = aws_api_gateway_rest_api.api.id
+  resource_id       = aws_api_gateway_resource.session_id.id
+  http_method       = aws_api_gateway_method.session_id_options.http_method
+  type              = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "session_id_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.session_id.id
+  http_method = aws_api_gateway_method.session_id_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "session_id_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.session_id.id
+  http_method = aws_api_gateway_method.session_id_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.session_id_options]
+}
+
+# /sessions/{id}/end
+resource "aws_api_gateway_resource" "session_end" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_resource.session_id.id
+  path_part   = "end"
+}
+
+# POST /sessions/{id}/end
+resource "aws_api_gateway_method" "session_end_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.session_end.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "session_end_post" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.session_end.id
+  http_method             = aws_api_gateway_method.session_end_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.sessions.invoke_arn
+}
+
+# OPTIONS /sessions/{id}/end
+resource "aws_api_gateway_method" "session_end_options" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.session_end.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "session_end_options" {
+  rest_api_id       = aws_api_gateway_rest_api.api.id
+  resource_id       = aws_api_gateway_resource.session_end.id
+  http_method       = aws_api_gateway_method.session_end_options.http_method
+  type              = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "session_end_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.session_end.id
+  http_method = aws_api_gateway_method.session_end_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "session_end_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.session_end.id
+  http_method = aws_api_gateway_method.session_end_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.session_end_options]
+}
+
+# /sessions/{id}/save
+resource "aws_api_gateway_resource" "session_save" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_resource.session_id.id
+  path_part   = "save"
+}
+
+# POST /sessions/{id}/save
+resource "aws_api_gateway_method" "session_save_post" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.session_save.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "session_save_post" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id             = aws_api_gateway_resource.session_save.id
+  http_method             = aws_api_gateway_method.session_save_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.sessions.invoke_arn
+}
+
+# OPTIONS /sessions/{id}/save
+resource "aws_api_gateway_method" "session_save_options" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.session_save.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "session_save_options" {
+  rest_api_id       = aws_api_gateway_rest_api.api.id
+  resource_id       = aws_api_gateway_resource.session_save.id
+  http_method       = aws_api_gateway_method.session_save_options.http_method
+  type              = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "session_save_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.session_save.id
+  http_method = aws_api_gateway_method.session_save_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "session_save_options" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.session_save.id
+  http_method = aws_api_gateway_method.session_save_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.session_save_options]
+}
+
 # --- API Gateway Deployment ---
 resource "aws_api_gateway_deployment" "api" {
   rest_api_id = aws_api_gateway_rest_api.api.id
@@ -417,16 +732,28 @@ resource "aws_api_gateway_deployment" "api" {
     aws_api_gateway_integration.extract_chart_post,
     aws_api_gateway_integration.extract_chart_options,
     aws_api_gateway_integration.credentials_get,
-    aws_api_gateway_integration.credentials_options
+    aws_api_gateway_integration.credentials_options,
+    aws_api_gateway_integration.sessions_get,
+    aws_api_gateway_integration.sessions_post,
+    aws_api_gateway_integration.sessions_options,
+    aws_api_gateway_integration.session_id_get,
+    aws_api_gateway_integration.session_id_options,
+    aws_api_gateway_integration.session_end_post,
+    aws_api_gateway_integration.session_end_options,
+    aws_api_gateway_integration.session_save_post,
+    aws_api_gateway_integration.session_save_options
   ]
   triggers = {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.extract_chart.id,
-      aws_api_gateway_method.extract_chart_post.id,
-      aws_api_gateway_integration.extract_chart_post.id,
       aws_api_gateway_resource.credentials.id,
-      aws_api_gateway_method.credentials_get.id,
-      aws_api_gateway_integration.credentials_get.id,
+      aws_api_gateway_resource.sessions.id,
+      aws_api_gateway_resource.session_id.id,
+      aws_api_gateway_resource.session_end.id,
+      aws_api_gateway_resource.session_save.id,
+      aws_api_gateway_method.sessions_post.id,
+      aws_api_gateway_method.session_end_post.id,
+      aws_api_gateway_method.session_save_post.id,
     ]))
   }
   lifecycle { create_before_destroy = true }
