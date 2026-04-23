@@ -1,0 +1,18 @@
+{
+  "patientId": "",
+  "providerId": "",
+  "date": "",
+  "chiefComplaint": "",
+  "treatmentPerformed": "",
+  "areasOfTreatment": [],
+  "productsUsed": [{"name": "", "syringes": "", "lot": ""}],
+  "injectionSites": [],
+  "technique": "",
+  "skinAssessment": "",
+  "adverseReactions": "",
+  "postTreatmentInstructions": "",
+  "followUpDate": "",
+  "providerNotes": "",
+  "consentObtained": true,
+  "photographsTaken": false
+}

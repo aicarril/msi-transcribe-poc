@@ -1,0 +1,18 @@
+{
+  "patientId": "",
+  "providerId": "",
+  "date": "",
+  "chiefComplaint": "",
+  "treatmentPerformed": "",
+  "areasOfTreatment": [],
+  "productsUsed": [{"name": "", "quantity": ""}],
+  "technique": "",
+  "skinType": "",
+  "skinAssessment": "",
+  "adverseReactions": "",
+  "postTreatmentInstructions": "",
+  "followUpDate": "",
+  "providerNotes": "",
+  "consentObtained": true,
+  "photographsTaken": false
+}
